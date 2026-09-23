@@ -47,7 +47,7 @@ export default function TeamPage({ currentProject }) {
     <div><h2>Team & roles</h2><p>Access to {currentProject.name}</p></div>
     <div className="role-guide"><span><strong>Owner</strong> manages access and data</span><span><strong>Manager</strong> updates budgets and expenses</span><span><strong>Viewer</strong> reads project data</span></div>
     {owner && <form className="entry-form" onSubmit={addMember}>
-      <h3>Add a registered user</h3>
+      <h3>Add a teammate with a confirmed account</h3>
       <div className="form-grid">
         <label>Email<input type="email" required value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} /></label>
         <label>Role<select value={form.role} onChange={e => setForm({ ...form, role: e.target.value })}><option value="viewer">Viewer</option><option value="manager">Manager</option></select></label>

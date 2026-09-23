@@ -18,15 +18,22 @@ function AuthScreen({ onAuth }) {
   const [mode, setMode] = useState('login');
   const [form, setForm] = useState({ name: '', email: '', password: '' });
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
 
   async function submit(event) {
     event.preventDefault();
     setError('');
+    setNotice('');
     setBusy(true);
     try {
       const result = await api(`/api/auth/${mode}`, { method: 'POST', body: JSON.stringify(form) });
-      onAuth(result.user);
+      if (result.confirmationRequired) {
+        setMode('login');
+        setNotice(result.message);
+      } else {
+        onAuth(result.user);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -44,6 +51,7 @@ function AuthScreen({ onAuth }) {
         <label>Email<input type="email" required autoComplete="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} /></label>
         <label>Password<input type="password" required minLength={mode === 'register' ? 8 : 1} autoComplete={mode === 'register' ? 'new-password' : 'current-password'} value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} /></label>
         {error && <div className="form-error" role="alert">{error}</div>}
+        {notice && <div className="form-notice" role="status">{notice}</div>}
         <button className="primary-button" disabled={busy}>{busy ? 'Please wait…' : mode === 'login' ? 'Log in' : 'Register'}</button>
       </form>
       <button className="text-button" onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError(''); }}>

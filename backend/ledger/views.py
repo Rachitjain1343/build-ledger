@@ -3,20 +3,26 @@ import mimetypes
 import uuid
 from decimal import Decimal, InvalidOperation
 from functools import wraps
-from pathlib import Path
 
 from django.conf import settings
-from django.contrib.auth import authenticate, get_user_model, login, logout
-from django.db import IntegrityError, transaction
-from django.db.models import Q
 from django.http import FileResponse, JsonResponse
 from django.views.decorators.csrf import ensure_csrf_cookie
 
-from .models import Expense, Payment, Project, ProjectMember
+from .supabase import SupabaseError, auth, rows
 
 
 def fail(message, status=400):
     return JsonResponse({"error": message}, status=status)
+
+
+def safe(view):
+    @wraps(view)
+    def wrapped(request, *args, **kwargs):
+        try:
+            return view(request, *args, **kwargs)
+        except SupabaseError as error:
+            return fail(str(error), error.status if error.status in {400, 401, 403, 404, 409, 422, 429, 503} else 502)
+    return wrapped
 
 
 def json_body(request):
@@ -27,17 +33,54 @@ def json_body(request):
         return {}
 
 
-def required_user(view):
+def require_method(request, *methods):
+    return None if request.method in methods else fail("Method not allowed.", 405)
+
+
+def remember_session(request, session):
+    request.session["supabase_access_token"] = session["access_token"]
+    request.session["supabase_refresh_token"] = session["refresh_token"]
+
+
+def current_user(request):
+    token = request.session.get("supabase_access_token")
+    if not token:
+        return None, None
+    try:
+        return auth("user", token=token), token
+    except SupabaseError as error:
+        if error.status != 401:
+            raise
+    refresh = request.session.get("supabase_refresh_token")
+    if not refresh:
+        request.session.flush()
+        return None, None
+    try:
+        session = auth("token?grant_type=refresh_token", method="POST", data={"refresh_token": refresh})
+        remember_session(request, session)
+        token = session["access_token"]
+        return auth("user", token=token), token
+    except SupabaseError:
+        request.session.flush()
+        return None, None
+
+
+def authenticated(view):
     @wraps(view)
     def wrapped(request, *args, **kwargs):
-        if not request.user.is_authenticated:
+        user, token = current_user(request)
+        if user is None:
             return fail("Please sign in.", 401)
+        request.supabase_user = user
+        request.supabase_token = token
         return view(request, *args, **kwargs)
     return wrapped
 
 
-def require_method(request, method):
-    return None if request.method == method else fail("Method not allowed.", 405)
+def user_payload(user):
+    metadata = user.get("user_metadata") or {}
+    email = user.get("email") or ""
+    return {"id": user.get("id"), "name": metadata.get("name") or metadata.get("first_name") or email.split("@")[0], "email": email}
 
 
 def amount(value, label):
@@ -51,95 +94,86 @@ def amount(value, label):
 
 
 def money(value, unit):
+    value = Decimal(str(value))
     divisor = Decimal("10000000") if unit == "Cr" else Decimal("100000")
+    if abs(value) < divisor:
+        return f"₹{value:,.2f}"
     return f"₹{value / divisor:.2f} {unit}"
 
 
-def payload(project, role="owner"):
-    rows = list(project.expenses.all())
-    payments = list(project.payments.all())
-    spent = sum((row.material_cost + row.labor_cost for row in rows), Decimal("0"))
-    divisor = Decimal("10000000") if project.unit == "Cr" else Decimal("100000")
+def project_role(project, members, user):
+    if project["owner_id"] == user["id"]:
+        return "owner"
+    return next((member["role"] for member in members if member["project_id"] == project["id"] and member["user_id"] == user["id"]), None)
+
+
+def project_payload(project, role, expenses, payments):
+    project_expenses = [row for row in expenses if row["project_id"] == project["id"]]
+    project_payments = [row for row in payments if row["project_id"] == project["id"]]
+    budget = Decimal(str(project["budget"]))
+    spent = sum((Decimal(str(row["material_cost"])) + Decimal(str(row["labor_cost"])) for row in project_expenses), Decimal(0))
+    unit = project.get("unit") or "Lakhs"
+    divisor = Decimal("10000000") if unit == "Cr" else Decimal("100000")
     chart = [{"stage": "Start", "DesignerBudget": 0, "ActualSpent": 0}]
-    running = Decimal("0")
-    for index, row in enumerate(rows, 1):
-        running += row.material_cost + row.labor_cost
-        chart.append({"stage": row.stage, "DesignerBudget": round(float(project.budget * index / max(len(rows), 1) / divisor), 2), "ActualSpent": round(float(running / divisor), 2)})
-    remaining = max(project.budget - spent, Decimal("0"))
-    status = "Over Budget" if spent > project.budget else "On Track"
+    running = Decimal(0)
+    for index, row in enumerate(project_expenses, 1):
+        running += Decimal(str(row["material_cost"])) + Decimal(str(row["labor_cost"]))
+        chart.append({"stage": row["stage"], "DesignerBudget": round(float(budget * index / len(project_expenses) / divisor), 2), "ActualSpent": round(float(running / divisor), 2)})
+    remaining = max(budget - spent, Decimal(0))
     return {
-        "id": str(project.id), "name": project.name, "unit": project.unit, "role": role,
-        "initialBudget": float(project.initial_budget), "budget": float(project.budget),
-        "contractors": project.contractors,
-        "initialEstimate": money(project.initial_budget, project.unit),
-        "revisedDesignerBudget": money(project.budget, project.unit),
-        "totalSpentToDate": money(spent, project.unit),
-        "remainingBudget": money(project.budget - spent, project.unit),
-        "activeContractors": f"{project.contractors} Teams", "statusBadge": status,
+        "id": project["id"], "name": project["name"], "role": role, "unit": unit,
+        "initialBudget": float(project["initial_budget"]), "budget": float(budget),
+        "contractors": project["contractors"],
+        "initialEstimate": money(project["initial_budget"], unit),
+        "revisedDesignerBudget": money(budget, unit),
+        "totalSpentToDate": money(spent, unit),
+        "remainingBudget": money(budget - spent, unit),
+        "activeContractors": f"{project['contractors']} Teams",
+        "statusBadge": "Over Budget" if spent > budget else "On Track",
         "chartData": chart,
         "costStatus": [
-            {"name": "Spent to Date", "value": round(float(spent / divisor), 2), "percentage": f"{round(spent / project.budget * 100) if project.budget else 0}%", "color": "#2563EB"},
-            {"name": "Remaining Balance", "value": round(float(remaining / divisor), 2), "percentage": f"{round(remaining / project.budget * 100) if project.budget else 0}%", "color": "#10B981"},
+            {"name": "Spent to Date", "value": round(float(spent / divisor), 2), "percentage": f"{round(spent / budget * 100) if budget else 0}%", "color": "#2563EB"},
+            {"name": "Remaining Balance", "value": round(float(remaining / divisor), 2), "percentage": f"{round(remaining / budget * 100) if budget else 0}%", "color": "#10B981"},
         ],
-        "stageCosts": [{"id": str(row.id), "stage": row.stage, "category": row.category,
-                        "materialCost": float(row.material_cost), "laborCost": float(row.labor_cost),
-                        "totalCost": float(row.material_cost + row.labor_cost), "status": row.status} for row in rows],
-        "upcomingPayments": [{"item": row.item, "vendor": row.vendor, "total": row.total,
-                              "advancePaid": row.advance_paid, "balanceDue": row.balance_due,
-                              "dueDate": row.due_date} for row in payments],
+        "stageCosts": [{"id": row["id"], "stage": row["stage"], "category": row["category"],
+                        "materialCost": float(row["material_cost"]), "laborCost": float(row["labor_cost"]),
+                        "totalCost": float(Decimal(str(row["material_cost"])) + Decimal(str(row["labor_cost"]))),
+                        "status": row["status"]} for row in project_expenses],
+        "upcomingPayments": [{"item": row["item"], "vendor": row["vendor"], "total": row["total"],
+                              "advancePaid": row["advance_paid"], "balanceDue": row["balance_due"],
+                              "dueDate": row["due_date"]} for row in project_payments],
     }
 
 
-def seed_projects(user):
-    examples = json.loads((settings.BASE_DIR / "demo_projects.json").read_text(encoding="utf-8"))
-
-    def parse_money(value):
-        number = Decimal(value.replace("₹", "").replace(",", "").split()[0])
-        return number * (10000000 if "Cr" in value else 100000)
-
-    for item in examples.values():
-        project = Project.objects.create(
-            user=user, name=item["name"], initial_budget=parse_money(item["initialEstimate"]),
-            budget=parse_money(item["revisedDesignerBudget"]),
-            contractors=int(item["activeContractors"].split()[0]),
-            unit="Cr" if "Cr" in item["revisedDesignerBudget"] else "Lakhs",
-        )
-        Expense.objects.bulk_create([
-            Expense(project=project, stage=row["stage"], category=row["category"],
-                    material_cost=row["materialCost"], labor_cost=row["laborCost"], status=row["status"])
-            for row in item["stageCosts"]
-        ])
-        Payment.objects.bulk_create([
-            Payment(project=project, item=row["item"], vendor=row["vendor"], total=row["total"],
-                    advance_paid=row["advancePaid"], balance_due=row["balanceDue"], due_date=row["dueDate"])
-            for row in item["upcomingPayments"]
-        ])
+def fetch_project_data(token, project_ids):
+    if not project_ids:
+        return [], [], []
+    filter_value = "in.(" + ",".join(project_ids) + ")"
+    members = rows("project_members", token=token, params={"select": "*", "project_id": filter_value})
+    expenses = rows("expenses", token=token, params={"select": "*", "project_id": filter_value, "order": "created_at.asc"})
+    payments = rows("payments", token=token, params={"select": "*", "project_id": filter_value, "order": "created_at.asc"})
+    return members, expenses, payments
 
 
-def user_payload(user):
-    return {"id": user.pk, "name": user.first_name, "email": user.email}
-
-
-def project_access(request, project_id):
+def load_project(request, project_id):
     try:
-        parsed_id = uuid.UUID(project_id)
+        project_id = str(uuid.UUID(project_id))
     except ValueError:
         return None, None
-    project = Project.objects.filter(id=parsed_id).first()
-    if project is None:
+    found = rows("projects", token=request.supabase_token, params={"select": "*", "id": "eq." + project_id})
+    if not found:
         return None, None
-    if project.user_id == request.user.pk:
-        return project, "owner"
-    membership = ProjectMember.objects.filter(project=project, user=request.user).first()
-    if membership:
-        return project, membership.role
-    return None, None
+    project = found[0]
+    members = rows("project_members", token=request.supabase_token, params={"select": "*", "project_id": "eq." + project_id})
+    return project, project_role(project, members, request.supabase_user)
 
 
-def editable(role):
-    return role in {"owner", "manager"}
+def detail_payload(request, project, role):
+    _, expenses, payments = fetch_project_data(request.supabase_token, [project["id"]])
+    return project_payload(project, role, expenses, payments)
 
 
+@safe
 def register(request):
     if (bad := require_method(request, "POST")):
         return bad
@@ -149,52 +183,55 @@ def register(request):
     password = str(data.get("password", ""))
     if not name or len(name) > 100 or "@" not in email or len(email) > 254 or len(password) < 8:
         return fail("Enter a name, valid email, and password of at least 8 characters.")
-    try:
-        with transaction.atomic():
-            user = get_user_model().objects.create_user(username=email, email=email, first_name=name, password=password)
-            seed_projects(user)
-    except IntegrityError:
-        return fail("An account with this email already exists.", 409)
-    login(request, user)
-    return JsonResponse({"user": user_payload(user)}, status=201)
+    result = auth("signup", method="POST", data={"email": email, "password": password, "data": {"name": name}})
+    if result.get("access_token") and result.get("refresh_token"):
+        request.session.flush()
+        remember_session(request, result)
+        return JsonResponse({"user": user_payload(result["user"])}, status=201)
+    return JsonResponse({"confirmationRequired": True, "message": "Check your email to confirm the account, then log in."}, status=201)
 
 
+@safe
 def sign_in(request):
     if (bad := require_method(request, "POST")):
         return bad
     data = json_body(request)
-    user = authenticate(request, username=str(data.get("email", "")).strip().lower(), password=str(data.get("password", "")))
-    if user is None:
-        return fail("Incorrect email or password.", 401)
-    login(request, user)
-    return JsonResponse({"user": user_payload(user)})
+    result = auth("token?grant_type=password", method="POST", data={"email": str(data.get("email", "")).strip().lower(), "password": str(data.get("password", ""))})
+    request.session.flush()
+    remember_session(request, result)
+    return JsonResponse({"user": user_payload(result["user"])})
 
 
+@safe
 def sign_out(request):
     if (bad := require_method(request, "POST")):
         return bad
-    logout(request)
+    token = request.session.get("supabase_access_token")
+    if token:
+        try:
+            auth("logout", method="POST", token=token)
+        except SupabaseError:
+            pass
+    request.session.flush()
     return JsonResponse({"ok": True})
 
 
 @ensure_csrf_cookie
+@safe
+@authenticated
 def me(request):
     if (bad := require_method(request, "GET")):
         return bad
-    if not request.user.is_authenticated:
-        return fail("Please sign in.", 401)
-    return JsonResponse({"user": user_payload(request.user)})
+    return JsonResponse({"user": user_payload(request.supabase_user)})
 
 
-@required_user
+@safe
+@authenticated
 def projects(request):
     if request.method == "GET":
-        records = Project.objects.filter(Q(user=request.user) | Q(members__user=request.user)).distinct().prefetch_related("expenses", "payments", "members")
-        result = {}
-        for item in records:
-            role = "owner" if item.user_id == request.user.pk else next(member.role for member in item.members.all() if member.user_id == request.user.pk)
-            result[str(item.id)] = payload(item, role)
-        return JsonResponse({"projects": result})
+        found = rows("projects", token=request.supabase_token, params={"select": "*", "order": "created_at.asc"})
+        members, expenses, payments = fetch_project_data(request.supabase_token, [project["id"] for project in found])
+        return JsonResponse({"projects": {project["id"]: project_payload(project, project_role(project, members, request.supabase_user), expenses, payments) for project in found}})
     if (bad := require_method(request, "POST")):
         return bad
     data = json_body(request)
@@ -207,58 +244,60 @@ def projects(request):
         contractors = int(data.get("contractors", 0))
         if not 0 <= contractors <= 10000:
             raise ValueError("Contractors must be between 0 and 10,000.")
-    except (ValueError, TypeError) as exc:
-        return fail(str(exc))
-    project = Project.objects.create(user=request.user, name=name, initial_budget=initial,
-                                     budget=budget, contractors=contractors)
-    return JsonResponse({"project": payload(project)}, status=201)
+    except (ValueError, TypeError) as error:
+        return fail(str(error))
+    user = request.supabase_user
+    record = {"owner_id": user["id"], "owner_email": user["email"].lower(), "name": name,
+              "initial_budget": str(initial), "budget": str(budget), "contractors": contractors, "unit": "Lakhs"}
+    created = rows("projects", token=request.supabase_token, method="POST", data=record)[0]
+    return JsonResponse({"project": project_payload(created, "owner", [], [])}, status=201)
 
 
-@required_user
+@safe
+@authenticated
 def project_detail(request, project_id):
     if (bad := require_method(request, "PATCH")):
         return bad
-    project, role = project_access(request, project_id)
+    project, role = load_project(request, project_id)
     if project is None:
         return fail("Project not found.", 404)
-    if not editable(role):
+    if role not in {"owner", "manager"}:
         return fail("Your role cannot update this project.", 403)
     data = json_body(request)
-    name = str(data.get("name", project.name)).strip()
+    name = str(data.get("name", project["name"])).strip()
     if not name or len(name) > 120:
         return fail("Project name is required (up to 120 characters).")
     try:
-        initial = amount(data.get("initialBudget", project.initial_budget), "Initial budget")
-        budget = amount(data.get("budget", project.budget), "Budget")
-        contractors = int(data.get("contractors", project.contractors))
+        initial = amount(data.get("initialBudget", project["initial_budget"]), "Initial budget")
+        budget = amount(data.get("budget", project["budget"]), "Budget")
+        contractors = int(data.get("contractors", project["contractors"]))
         if not 0 <= contractors <= 10000:
             raise ValueError("Contractors must be between 0 and 10,000.")
-    except (ValueError, TypeError) as exc:
-        return fail(str(exc))
-    project.name = name
-    project.initial_budget = initial
-    project.budget = budget
-    project.contractors = contractors
-    project.save(update_fields=["name", "initial_budget", "budget", "contractors"])
-    return JsonResponse({"project": payload(project, role)})
+    except (ValueError, TypeError) as error:
+        return fail(str(error))
+    updated = rows("projects", token=request.supabase_token, method="PATCH", params={"id": "eq." + project["id"]},
+                   data={"name": name, "initial_budget": str(initial), "budget": str(budget), "contractors": contractors})
+    if not updated:
+        return fail("Project update was not permitted.", 403)
+    return JsonResponse({"project": detail_payload(request, updated[0], role)})
 
 
-def member_payload(project):
-    owner = project.user
-    result = [{"id": owner.pk, "name": owner.first_name, "email": owner.email, "role": "owner"}]
-    for member in project.members.select_related("user").all():
-        result.append({"id": member.user_id, "name": member.user.first_name,
-                       "email": member.user.email, "role": member.role})
-    return result
+def member_payload(project, members):
+    result = [{"id": project["owner_id"], "name": project["owner_email"].split("@")[0],
+               "email": project["owner_email"], "role": "owner"}]
+    return result + [{"id": member["id"], "name": member["name"],
+                      "email": member["email"], "role": member["role"]} for member in members]
 
 
-@required_user
+@safe
+@authenticated
 def members(request, project_id):
-    project, role = project_access(request, project_id)
+    project, role = load_project(request, project_id)
     if project is None:
         return fail("Project not found.", 404)
     if request.method == "GET":
-        return JsonResponse({"members": member_payload(project)})
+        found = rows("project_members", token=request.supabase_token, params={"select": "*", "project_id": "eq." + project["id"]})
+        return JsonResponse({"members": member_payload(project, found)})
     if (bad := require_method(request, "POST")):
         return bad
     if role != "owner":
@@ -266,107 +305,106 @@ def members(request, project_id):
     data = json_body(request)
     email = str(data.get("email", "")).strip().lower()
     new_role = str(data.get("role", ""))
-    if new_role not in {"manager", "viewer"}:
-        return fail("Choose manager or viewer.")
-    user = get_user_model().objects.filter(username=email).first()
-    if user is None:
-        return fail("No registered user has that email.", 404)
-    if user.pk == project.user_id:
+    if "@" not in email or len(email) > 254 or new_role not in {"manager", "viewer"}:
+        return fail("Enter an email and choose manager or viewer.")
+    if email == project["owner_email"]:
         return fail("The owner already has access.")
-    try:
-        ProjectMember.objects.create(project=project, user=user, role=new_role)
-    except IntegrityError:
-        return fail("That user already has access.", 409)
-    return JsonResponse({"members": member_payload(project)}, status=201)
+    rows("rpc/add_project_member", token=request.supabase_token, method="POST",
+         data={"project_uuid": project["id"], "member_email": email, "member_role": new_role})
+    found = rows("project_members", token=request.supabase_token, params={"select": "*", "project_id": "eq." + project["id"]})
+    return JsonResponse({"members": member_payload(project, found)}, status=201)
 
 
-@required_user
+@safe
+@authenticated
 def member_detail(request, project_id, user_id):
-    project, role = project_access(request, project_id)
+    project, role = load_project(request, project_id)
     if project is None:
         return fail("Project not found.", 404)
     if role != "owner":
         return fail("Only the project owner can manage roles.", 403)
-    membership = ProjectMember.objects.filter(project=project, user_id=user_id).first()
-    if membership is None:
+    try:
+        member_id = str(uuid.UUID(user_id))
+    except ValueError:
+        return fail("Member not found.", 404)
+    params = {"id": "eq." + member_id, "project_id": "eq." + project["id"]}
+    found = rows("project_members", token=request.supabase_token, params={"select": "id", **params})
+    if not found:
         return fail("Member not found.", 404)
     if request.method == "PATCH":
         new_role = str(json_body(request).get("role", ""))
         if new_role not in {"manager", "viewer"}:
             return fail("Choose manager or viewer.")
-        membership.role = new_role
-        membership.save(update_fields=["role"])
+        rows("project_members", token=request.supabase_token, method="PATCH", params=params, data={"role": new_role})
     elif request.method == "DELETE":
-        membership.delete()
+        rows("project_members", token=request.supabase_token, method="DELETE", params=params)
     else:
         return fail("Method not allowed.", 405)
-    return JsonResponse({"members": member_payload(project)})
+    remaining = rows("project_members", token=request.supabase_token, params={"select": "*", "project_id": "eq." + project["id"]})
+    return JsonResponse({"members": member_payload(project, remaining)})
 
 
-@required_user
+def expense_input(data, existing=None):
+    existing = existing or {}
+    stage = str(data.get("stage", existing.get("stage", ""))).strip()
+    category = str(data.get("category", existing.get("category", ""))).strip()
+    status = str(data.get("status", existing.get("status", "In Progress")))
+    if not stage or not category or len(stage) > 120 or len(category) > 80:
+        raise ValueError("Stage and category are required.")
+    if status not in {"Completed", "In Progress", "Over Budget"}:
+        raise ValueError("Invalid status.")
+    material = amount(data.get("materialCost", existing.get("material_cost")), "Material cost")
+    labor = amount(data.get("laborCost", existing.get("labor_cost")), "Labor cost")
+    return {"stage": stage, "category": category, "status": status,
+            "material_cost": str(material), "labor_cost": str(labor)}
+
+
+@safe
+@authenticated
 def expenses(request, project_id):
     if (bad := require_method(request, "POST")):
         return bad
-    project, role = project_access(request, project_id)
+    project, role = load_project(request, project_id)
     if project is None:
         return fail("Project not found.", 404)
-    if not editable(role):
+    if role not in {"owner", "manager"}:
         return fail("Your role cannot update expenses.", 403)
-    data = json_body(request)
-    stage = str(data.get("stage", "")).strip()
-    category = str(data.get("category", "")).strip()
-    status = str(data.get("status", "In Progress"))
-    if not stage or not category or len(stage) > 120 or len(category) > 80:
-        return fail("Stage and category are required.")
-    if status not in {"Completed", "In Progress", "Over Budget"}:
-        return fail("Invalid status.")
     try:
-        material = amount(data.get("materialCost"), "Material cost")
-        labor = amount(data.get("laborCost"), "Labor cost")
-    except ValueError as exc:
-        return fail(str(exc))
-    Expense.objects.create(project=project, stage=stage, category=category,
-                           material_cost=material, labor_cost=labor, status=status)
-    return JsonResponse({"project": payload(project, role)}, status=201)
+        data = expense_input(json_body(request))
+    except ValueError as error:
+        return fail(str(error))
+    rows("expenses", token=request.supabase_token, method="POST", data={"project_id": project["id"], **data})
+    return JsonResponse({"project": detail_payload(request, project, role)}, status=201)
 
 
-@required_user
+@safe
+@authenticated
 def expense_detail(request, project_id, expense_id):
     if (bad := require_method(request, "PATCH")):
         return bad
-    project, role = project_access(request, project_id)
+    project, role = load_project(request, project_id)
     if project is None:
         return fail("Project not found.", 404)
-    if not editable(role):
+    if role not in {"owner", "manager"}:
         return fail("Your role cannot update expenses.", 403)
     try:
-        parsed_id = uuid.UUID(expense_id)
+        expense_id = str(uuid.UUID(expense_id))
     except ValueError:
         return fail("Expense not found.", 404)
-    expense = Expense.objects.filter(id=parsed_id, project=project).first()
-    if expense is None:
+    params = {"id": "eq." + expense_id, "project_id": "eq." + project["id"]}
+    found = rows("expenses", token=request.supabase_token, params={"select": "*", **params})
+    if not found:
         return fail("Expense not found.", 404)
-    data = json_body(request)
-    stage = str(data.get("stage", expense.stage)).strip()
-    category = str(data.get("category", expense.category)).strip()
-    status = str(data.get("status", expense.status))
-    if not stage or not category or len(stage) > 120 or len(category) > 80:
-        return fail("Stage and category are required.")
-    if status not in {"Completed", "In Progress", "Over Budget"}:
-        return fail("Invalid status.")
     try:
-        material = amount(data.get("materialCost", expense.material_cost), "Material cost")
-        labor = amount(data.get("laborCost", expense.labor_cost), "Labor cost")
-    except ValueError as exc:
-        return fail(str(exc))
-    expense.stage, expense.category, expense.status = stage, category, status
-    expense.material_cost, expense.labor_cost = material, labor
-    expense.save()
-    return JsonResponse({"project": payload(project, role)})
+        data = expense_input(json_body(request), found[0])
+    except ValueError as error:
+        return fail(str(error))
+    rows("expenses", token=request.supabase_token, method="PATCH", params=params, data=data)
+    return JsonResponse({"project": detail_payload(request, project, role)})
 
 
 def health(request):
-    return JsonResponse({"status": "ok"})
+    return JsonResponse({"status": "ok", "supabase_configured": bool(settings.SUPABASE_URL and settings.SUPABASE_ANON_KEY)})
 
 
 def frontend(request, path=""):
