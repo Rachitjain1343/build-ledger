@@ -1,5 +1,4 @@
-import React from 'react';
-import { FileText, Calendar, CreditCard } from 'lucide-react';
+import { FileText, Calendar } from 'lucide-react';
 
 export default function ContractsPage({ currentProject }) {
   const upcomingPayments = currentProject?.upcomingPayments || [];
@@ -11,7 +10,7 @@ export default function ContractsPage({ currentProject }) {
         <span style={{ fontSize: '13px', color: '#64748B' }}>Active vendor billing and payout schedules for {currentProject.name}</span>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '16px' }}>
+      <div className="two-column-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '16px' }}>
         {upcomingPayments.map((contract, idx) => (
           <div key={idx} style={{ backgroundColor: '#FFFFFF', padding: '20px', borderRadius: '12px', border: '1px solid #E2E8F0', display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>

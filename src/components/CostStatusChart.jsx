@@ -1,4 +1,3 @@
-import React from 'react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 
 export default function CostStatusChart({ data, totalBudget, isLakhs }) {

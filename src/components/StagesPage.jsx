@@ -1,5 +1,4 @@
-import React from 'react';
-import { Layers, CheckCircle2, Clock, AlertCircle } from 'lucide-react';
+import { CheckCircle2, Clock } from 'lucide-react';
 
 export default function StagesPage({ currentProject }) {
   const stageCosts = currentProject?.stageCosts || [];
@@ -11,7 +10,7 @@ export default function StagesPage({ currentProject }) {
         <span style={{ fontSize: '13px', color: '#64748B' }}>Lifecycle phase monitoring for {currentProject.name}</span>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '16px' }}>
+      <div className="two-column-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '16px' }}>
         {stageCosts.map((stage, idx) => (
           <div key={idx} style={{ backgroundColor: '#FFFFFF', padding: '20px', borderRadius: '12px', border: '1px solid #E2E8F0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>

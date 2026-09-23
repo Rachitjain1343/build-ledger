@@ -1,16 +1,11 @@
-import React from 'react';
 import { 
   LayoutDashboard, 
   FolderKanban, 
-  FileSpreadsheet, 
   Receipt, 
   Scale, 
   Layers, 
   FileText, 
-  Bell, 
-  File, 
-  Users, 
-  Settings,
+  Users,
   Building2
 } from 'lucide-react';
 
@@ -18,19 +13,16 @@ export default function Sidebar({ activePage, setActivePage }) {
   const menuItems = [
     { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard' },
     { id: 'projects', icon: FolderKanban, label: 'Projects' },
-    { id: 'estimates', icon: FileSpreadsheet, label: 'Estimates' },
     { id: 'costs', icon: Receipt, label: 'Costs & Expenses' },
     { id: 'budget', icon: Scale, label: 'Budget vs Actual' },
     { id: 'stages', icon: Layers, label: 'Stages' },
     { id: 'contracts', icon: FileText, label: 'Contracts' },
     { id: 'reports', icon: FileText, label: 'Reports' },
-    { id: 'alerts', icon: Bell, label: 'Alerts' },
-    { id: 'documents', icon: File, label: 'Documents' },
-    { id: 'team', icon: Users, label: 'Team' },
+    { id: 'team', icon: Users, label: 'Team & Roles' },
   ];
 
   return (
-    <aside style={{
+    <aside className="sidebar" style={{
       width: '240px',
       height: '100vh',
       backgroundColor: '#0F172A',
@@ -86,24 +78,6 @@ export default function Sidebar({ activePage, setActivePage }) {
         </nav>
       </div>
 
-      <div style={{ borderTop: '1px solid #1E293B', paddingTop: '16px' }}>
-        <button style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '12px',
-          padding: '8px 12px',
-          borderRadius: '8px',
-          border: 'none',
-          backgroundColor: 'transparent',
-          color: '#94A3B8',
-          fontSize: '14px',
-          cursor: 'pointer',
-          width: '100%'
-        }}>
-          <Settings size={18} />
-          Settings
-        </button>
-      </div>
     </aside>
   );
 }

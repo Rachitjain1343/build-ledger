@@ -1,14 +1,50 @@
-import React, { useState } from 'react';
-import { Receipt, Plus, Search, Filter } from 'lucide-react';
+import { useState } from 'react';
+import { Plus, Search } from 'lucide-react';
+import { api } from '../lib/api';
 
-export default function CostsPage({ currentProject }) {
+export default function CostsPage({ currentProject, onUpdated }) {
   const [searchTerm, setSearchTerm] = useState('');
+  const [category, setCategory] = useState('');
+  const [editingId, setEditingId] = useState(null);
+  const [form, setForm] = useState({ stage: '', category: '', materialCost: '', laborCost: '', status: 'In Progress' });
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const canEdit = currentProject.role !== 'viewer';
   const stageCosts = currentProject?.stageCosts || [];
+  const categories = [...new Set(stageCosts.map(row => row.category))];
 
-  const filteredCosts = stageCosts.filter(item => 
-    item.stage.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    item.category.toLowerCase().includes(searchTerm.toLowerCase())
+  const filteredCosts = stageCosts.filter(item =>
+    (!category || item.category === category) &&
+    (item.stage.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    item.category.toLowerCase().includes(searchTerm.toLowerCase()))
   );
+
+  function edit(row) {
+    setEditingId(row.id);
+    setForm({ stage: row.stage, category: row.category, materialCost: row.materialCost, laborCost: row.laborCost, status: row.status });
+    setError('');
+  }
+
+  function add() {
+    setEditingId('new');
+    setForm({ stage: '', category: '', materialCost: '', laborCost: '', status: 'In Progress' });
+    setError('');
+  }
+
+  async function saveExpense(event) {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      const creating = editingId === 'new';
+      const path = `/api/projects/${currentProject.id}/expenses${creating ? '' : `/${editingId}`}`;
+      const result = await api(path, { method: creating ? 'POST' : 'PATCH', body: JSON.stringify(form) });
+      onUpdated(result.project);
+      setForm({ stage: '', category: '', materialCost: '', laborCost: '', status: 'In Progress' });
+      setEditingId(null);
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -18,7 +54,7 @@ export default function CostsPage({ currentProject }) {
           <h2 style={{ fontSize: '18px', fontWeight: 'bold', color: '#0F172A', margin: 0 }}>Itemized Expense Ledger</h2>
           <span style={{ fontSize: '13px', color: '#64748B' }}>Detailed material and labor transactions for {currentProject.name}</span>
         </div>
-        <button style={{
+        {canEdit && <button onClick={add} style={{
           backgroundColor: '#2563EB',
           color: '#FFFFFF',
           border: 'none',
@@ -32,8 +68,21 @@ export default function CostsPage({ currentProject }) {
           cursor: 'pointer'
         }}>
           <Plus size={16} /> Add Expense
-        </button>
+        </button>}
       </div>
+
+      {editingId && <form className="entry-form" onSubmit={saveExpense}>
+        <h3>{editingId === 'new' ? 'Add expense' : 'Edit expense'}</h3>
+        <div className="form-grid">
+          <label>Stage or item<input required maxLength="120" value={form.stage} onChange={e => setForm({ ...form, stage: e.target.value })} /></label>
+          <label>Category<input required maxLength="80" value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} /></label>
+          <label>Material cost (₹)<input type="number" required min="0" step="0.01" value={form.materialCost} onChange={e => setForm({ ...form, materialCost: e.target.value })} /></label>
+          <label>Labor cost (₹)<input type="number" required min="0" step="0.01" value={form.laborCost} onChange={e => setForm({ ...form, laborCost: e.target.value })} /></label>
+          <label>Status<select value={form.status} onChange={e => setForm({ ...form, status: e.target.value })}><option>In Progress</option><option>Completed</option><option>Over Budget</option></select></label>
+        </div>
+        {error && <div className="form-error" role="alert">{error}</div>}
+        <div className="form-actions"><button type="button" className="secondary-button" onClick={() => setEditingId(null)}>Cancel</button><button className="primary-button" disabled={busy}>{busy ? 'Saving…' : 'Save expense'}</button></div>
+      </form>}
 
       {/* Filter & Search Bar */}
       <div style={{ backgroundColor: '#FFFFFF', padding: '16px', borderRadius: '12px', border: '1px solid #E2E8F0', display: 'flex', gap: '12px', alignItems: 'center' }}>
@@ -47,13 +96,11 @@ export default function CostsPage({ currentProject }) {
             style={{ border: 'none', background: 'transparent', outline: 'none', fontSize: '13px', width: '100%', color: '#1E293B' }}
           />
         </div>
-        <button style={{ border: '1px solid #CBD5E1', backgroundColor: '#FFFFFF', padding: '8px 14px', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#475569', cursor: 'pointer' }}>
-          <Filter size={16} /> Category
-        </button>
+        <select aria-label="Filter category" value={category} onChange={e => setCategory(e.target.value)}><option value="">All categories</option>{categories.map(value => <option key={value}>{value}</option>)}</select>
       </div>
 
       {/* Ledger Table */}
-      <div style={{ backgroundColor: '#FFFFFF', borderRadius: '12px', padding: '20px', border: '1px solid #E2E8F0' }}>
+      <div className="table-scroll" style={{ backgroundColor: '#FFFFFF', borderRadius: '12px', padding: '20px', border: '1px solid #E2E8F0' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
           <thead>
             <tr style={{ borderBottom: '2px solid #F1F5F9', color: '#64748B', textAlign: 'left' }}>
@@ -63,6 +110,7 @@ export default function CostsPage({ currentProject }) {
               <th style={{ paddingBottom: '12px', textAlign: 'right' }}>Labor Cost</th>
               <th style={{ paddingBottom: '12px', textAlign: 'right' }}>Total Expense</th>
               <th style={{ paddingBottom: '12px', textAlign: 'center' }}>Status</th>
+              {canEdit && <th style={{ paddingBottom: '12px', textAlign: 'right' }}>Action</th>}
             </tr>
           </thead>
           <tbody>
@@ -89,10 +137,12 @@ export default function CostsPage({ currentProject }) {
                     {row.status}
                   </span>
                 </td>
+                {canEdit && <td style={{ padding: '14px 0', textAlign: 'right' }}><button className="text-button" onClick={() => edit(row)}>Edit</button></td>}
               </tr>
             ))}
           </tbody>
         </table>
+        {filteredCosts.length === 0 && <p className="empty-state">No expenses match your search.</p>}
       </div>
     </div>
   );

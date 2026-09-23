@@ -1,5 +1,4 @@
-import React from 'react';
-import { Download, FileText, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { Download, CheckCircle2, AlertTriangle } from 'lucide-react';
 
 export default function ReportsPage({ currentProject }) {
   return (
@@ -9,7 +8,7 @@ export default function ReportsPage({ currentProject }) {
           <h2 style={{ fontSize: '18px', fontWeight: 'bold', color: '#0F172A', margin: 0 }}>Executive Cost Summary</h2>
           <span style={{ fontSize: '13px', color: '#64748B' }}>Generated report for {currentProject.name}</span>
         </div>
-        <button style={{
+        <button onClick={() => window.print()} style={{
           backgroundColor: '#FFFFFF',
           border: '1px solid #CBD5E1',
           padding: '10px 16px',
@@ -27,7 +26,7 @@ export default function ReportsPage({ currentProject }) {
       </div>
 
       {/* Overview Cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
+      <div className="report-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
         <div style={{ backgroundColor: '#FFFFFF', padding: '20px', borderRadius: '12px', border: '1px solid #E2E8F0' }}>
           <span style={{ fontSize: '12px', color: '#64748B' }}>Initial Approved Estimate</span>
           <h3 style={{ fontSize: '20px', fontWeight: 'bold', color: '#0F172A', marginTop: '4px' }}>{currentProject.initialEstimate}</h3>

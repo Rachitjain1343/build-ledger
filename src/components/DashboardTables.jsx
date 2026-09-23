@@ -1,12 +1,11 @@
-import React from 'react';
 import { FileText } from 'lucide-react';
 
 export default function DashboardTables({ stageCosts, upcomingPayments }) {
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: '20px' }}>
+    <div className="dashboard-tables" style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: '20px' }}>
       
       {/* Stage Breakdown Table */}
-      <div style={{ backgroundColor: '#FFFFFF', borderRadius: '12px', padding: '20px', border: '1px solid #E2E8F0' }}>
+      <div className="table-scroll" style={{ backgroundColor: '#FFFFFF', borderRadius: '12px', padding: '20px', border: '1px solid #E2E8F0' }}>
         <h3 style={{ fontSize: '15px', fontWeight: 'bold', color: '#0F172A', margin: '0 0 16px 0' }}>
           Stage Wise Expense Breakdown
         </h3>

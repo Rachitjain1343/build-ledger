@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Sidebar from './components/Sidebar';
 import StatCard from './components/StatCard';
 import BudgetVsActualChart from './components/BudgetVsActualChart';
@@ -10,99 +10,128 @@ import ProjectsPage from './components/ProjectsPage';
 import BudgetVsActualPage from './components/BudgetVsActualPage';
 import StagesPage from './components/StagesPage';
 import ContractsPage from './components/ContractsPage';
-import { projectsData } from './data/renovationData';
-import { Wallet, CircleDollarSign, TrendingDown, Users, Bell, User } from 'lucide-react';
+import TeamPage from './components/TeamPage';
+import { Wallet, CircleDollarSign, TrendingDown, Users, LogOut } from 'lucide-react';
+import { api } from './lib/api';
+
+function AuthScreen({ onAuth }) {
+  const [mode, setMode] = useState('login');
+  const [form, setForm] = useState({ name: '', email: '', password: '' });
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function submit(event) {
+    event.preventDefault();
+    setError('');
+    setBusy(true);
+    try {
+      const result = await api(`/api/auth/${mode}`, { method: 'POST', body: JSON.stringify(form) });
+      onAuth(result.user);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <div className="auth-screen">
+    <div className="auth-card">
+      <div className="auth-brand">▣ BuildLedger</div>
+      <h1>{mode === 'login' ? 'Welcome back' : 'Create your account'}</h1>
+      <p>Track construction budgets and expenses in one place.</p>
+      <form onSubmit={submit} className="form-stack">
+        {mode === 'register' && <label>Name<input required maxLength="100" autoComplete="name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></label>}
+        <label>Email<input type="email" required autoComplete="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} /></label>
+        <label>Password<input type="password" required minLength={mode === 'register' ? 8 : 1} autoComplete={mode === 'register' ? 'new-password' : 'current-password'} value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} /></label>
+        {error && <div className="form-error" role="alert">{error}</div>}
+        <button className="primary-button" disabled={busy}>{busy ? 'Please wait…' : mode === 'login' ? 'Log in' : 'Register'}</button>
+      </form>
+      <button className="text-button" onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError(''); }}>
+        {mode === 'login' ? 'New here? Create an account' : 'Already have an account? Log in'}
+      </button>
+    </div>
+  </div>;
+}
 
 export default function App() {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [projects, setProjects] = useState({});
   const [activePage, setActivePage] = useState('dashboard');
-  const [selectedProjectId, setSelectedProjectId] = useState('room-renovation');
+  const [selectedProjectId, setSelectedProjectId] = useState('');
+  const [error, setError] = useState('');
 
-  const currentProject = projectsData[selectedProjectId] || projectsData['room-renovation'];
-  const isLakhs = selectedProjectId === 'room-renovation';
+  useEffect(() => {
+    api('/api/me').then(result => setUser(result.user)).catch(() => {}).finally(() => setLoading(false));
+  }, []);
 
-  return (
-    <div style={{ display: 'flex', backgroundColor: '#F8FAFC', minHeight: '100vh', fontFamily: 'sans-serif' }}>
-      <Sidebar activePage={activePage} setActivePage={setActivePage} />
+  useEffect(() => {
+    if (!user) return;
+    api('/api/projects').then(result => {
+      setProjects(result.projects);
+      setSelectedProjectId(id => result.projects[id] ? id : Object.keys(result.projects)[0] || '');
+    }).catch(err => setError(err.message));
+  }, [user]);
 
-      <main style={{ marginLeft: '240px', padding: '32px', flex: 1, overflowX: 'hidden' }}>
-        {/* Top Header Bar */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '28px' }}>
-          <div>
-            <h1 style={{ fontSize: '24px', fontWeight: 'bold', color: '#0F172A', margin: 0 }}>
-              {currentProject.name}
-            </h1>
-            <p style={{ fontSize: '14px', color: '#64748B', marginTop: '4px', margin: 0 }}>
-              Tracking actual construction expenses & contractor payouts live.
-            </p>
-          </div>
+  async function logout() {
+    try {
+      await api('/api/auth/logout', { method: 'POST' });
+      setUser(null);
+      setProjects({});
+      setSelectedProjectId('');
+      setActivePage('dashboard');
+    } catch (err) { setError(err.message); }
+  }
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-            <select 
-              value={selectedProjectId} 
-              onChange={(e) => setSelectedProjectId(e.target.value)}
-              style={{
-                padding: '8px 14px',
-                borderRadius: '8px',
-                border: '1px solid #CBD5E1',
-                backgroundColor: '#FFFFFF',
-                fontSize: '14px',
-                fontWeight: '600',
-                color: '#2563EB',
-                cursor: 'pointer'
-              }}
-            >
-              <option value="room-renovation">🏠 Master Room Renovation</option>
-              <option value="skyline-residency">🏢 Skyline Residency</option>
-              <option value="green-heights">🌿 Green Heights</option>
-            </select>
+  function updateProject(project) {
+    setProjects(previous => ({ ...previous, [project.id]: project }));
+    setSelectedProjectId(project.id);
+  }
 
-            <button style={{ backgroundColor: '#FFFFFF', border: '1px solid #CBD5E1', padding: '8px', borderRadius: '8px', cursor: 'pointer' }}>
-              <Bell size={18} color="#64748B" />
-            </button>
+  if (loading) return <div className="loading-screen">Loading BuildLedger…</div>;
+  if (!user) return <AuthScreen onAuth={setUser} />;
 
-            <div style={{ width: '36px', height: '36px', borderRadius: '50%', backgroundColor: '#E2E8F0', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <User size={20} color="#475569" />
-            </div>
-          </div>
+  const currentProject = projects[selectedProjectId];
+  const isLakhs = currentProject?.unit !== 'Cr';
+
+  return <div className="app-shell">
+    <Sidebar activePage={activePage} setActivePage={setActivePage} />
+    <main className="app-main">
+      <header className="top-bar">
+        <div>
+          <h1>{activePage === 'projects' ? 'Projects' : currentProject?.name || 'BuildLedger'}</h1>
+          <p>Construction cost and contractor payment tracking</p>
         </div>
-
-        {/* Explicit Page Routing */}
-        {activePage === 'dashboard' && (
-          <>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '20px', marginBottom: '28px' }}>
-              <StatCard title="Total Budget" value={currentProject.revisedDesignerBudget} subtext={`Initial: ${currentProject.initialEstimate}`} icon={Wallet} />
-              <StatCard title="Total Spent to Date" value={currentProject.totalSpentToDate} subtext="Paid Out" icon={CircleDollarSign} />
-              <StatCard title="Remaining Balance" value={currentProject.remainingBudget} badge={currentProject.statusBadge} badgeColor="#16A34A" badgeBg="#DCFCE7" icon={TrendingDown} />
-              <StatCard title="Active Contractors" value={currentProject.activeContractors} subtext="On-Site Teams" icon={Users} />
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '20px', marginBottom: '28px' }}>
-              <BudgetVsActualChart data={currentProject.chartData || []} isLakhs={isLakhs} />
-              <CostStatusChart data={currentProject.costStatus || []} totalBudget={currentProject.revisedDesignerBudget} isLakhs={isLakhs} />
-            </div>
-
-            <DashboardTables stageCosts={currentProject.stageCosts || []} upcomingPayments={currentProject.upcomingPayments || []} />
-          </>
-        )}
-
-        {activePage === 'projects' && <ProjectsPage setSelectedProjectId={setSelectedProjectId} setActivePage={setActivePage} />}
-        {activePage === 'costs' && <CostsPage currentProject={currentProject} />}
-        {activePage === 'budget' && <BudgetVsActualPage currentProject={currentProject} />}
-        {activePage === 'stages' && <StagesPage currentProject={currentProject} />}
-        {activePage === 'contracts' && <ContractsPage currentProject={currentProject} />}
-        {activePage === 'reports' && <ReportsPage currentProject={currentProject} />}
-
-        {/* Fallback for remaining menu items */}
-        {activePage !== 'dashboard' && 
-         activePage !== 'projects' && 
-         activePage !== 'costs' && 
-         activePage !== 'budget' && 
-         activePage !== 'stages' && 
-         activePage !== 'contracts' && 
-         activePage !== 'reports' && (
-          <CostsPage currentProject={currentProject} />
-        )}
-      </main>
-    </div>
-  );
+        <div className="top-actions">
+          {currentProject && <select aria-label="Select project" value={selectedProjectId} onChange={e => setSelectedProjectId(e.target.value)}>
+            {Object.entries(projects).map(([id, project]) => <option key={id} value={id}>{project.name}</option>)}
+          </select>}
+          <span className="user-name">{user.name}</span>
+          <button className="icon-button" title="Log out" aria-label="Log out" onClick={logout}><LogOut size={18} /></button>
+        </div>
+      </header>
+      {error && <div className="form-error" role="alert">{error}</div>}
+      {activePage === 'projects' && <ProjectsPage projects={projects} onCreated={updateProject} setSelectedProjectId={setSelectedProjectId} setActivePage={setActivePage} />}
+      {!currentProject && activePage !== 'projects' && <div className="empty-state">No projects yet. <button className="text-button" onClick={() => setActivePage('projects')}>Create a project</button></div>}
+      {currentProject && activePage === 'dashboard' && <>
+        <div className="stats-grid">
+          <StatCard title="Total Budget" value={currentProject.revisedDesignerBudget} subtext={`Initial: ${currentProject.initialEstimate}`} icon={Wallet} />
+          <StatCard title="Total Spent to Date" value={currentProject.totalSpentToDate} subtext="Recorded expenses" icon={CircleDollarSign} />
+          <StatCard title="Remaining Balance" value={currentProject.remainingBudget} badge={currentProject.statusBadge} badgeColor={currentProject.statusBadge === 'Over Budget' ? '#DC2626' : '#16A34A'} badgeBg={currentProject.statusBadge === 'Over Budget' ? '#FEE2E2' : '#DCFCE7'} icon={TrendingDown} />
+          <StatCard title="Active Contractors" value={currentProject.activeContractors} subtext="On-site teams" icon={Users} />
+        </div>
+        <div className="charts-grid">
+          <BudgetVsActualChart data={currentProject.chartData} isLakhs={isLakhs} />
+          <CostStatusChart data={currentProject.costStatus} totalBudget={currentProject.revisedDesignerBudget} isLakhs={isLakhs} />
+        </div>
+        <DashboardTables stageCosts={currentProject.stageCosts} upcomingPayments={currentProject.upcomingPayments} />
+      </>}
+      {currentProject && activePage === 'costs' && <CostsPage key={currentProject.id} currentProject={currentProject} onUpdated={updateProject} />}
+      {currentProject && activePage === 'budget' && <BudgetVsActualPage key={currentProject.id} currentProject={currentProject} onUpdated={updateProject} />}
+      {currentProject && activePage === 'stages' && <StagesPage currentProject={currentProject} />}
+      {currentProject && activePage === 'contracts' && <ContractsPage currentProject={currentProject} />}
+      {currentProject && activePage === 'reports' && <ReportsPage currentProject={currentProject} />}
+      {currentProject && activePage === 'team' && <TeamPage currentProject={currentProject} />}
+    </main>
+  </div>;
 }
