@@ -14,11 +14,14 @@ SECRET_KEY = os.environ.get("BUILDLEDGER_SECRET_KEY", "development-only-change-b
 DEBUG = os.environ.get("BUILDLEDGER_DEBUG", "1") == "1"
 if not DEBUG and "BUILDLEDGER_SECRET_KEY" not in os.environ:
     raise RuntimeError("Set BUILDLEDGER_SECRET_KEY when BUILDLEDGER_DEBUG=0.")
-ALLOWED_HOSTS = os.environ.get("BUILDLEDGER_ALLOWED_HOSTS", "localhost,127.0.0.1,testserver").split(",")
+ALLOWED_HOSTS = os.environ.get("build-ledger.onrender.com", "localhost,127.0.0.1,testserver").split(",")
 CSRF_TRUSTED_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
-INSTALLED_APPS = ["ledger"]
+INSTALLED_APPS = [
+                "corsheaders",
+                "ledger"]
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
