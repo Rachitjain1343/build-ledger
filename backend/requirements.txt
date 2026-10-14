@@ -1,2 +1,5 @@
 Django>=5.2,<6
 gunicorn
+django-cors-headers
+
+
