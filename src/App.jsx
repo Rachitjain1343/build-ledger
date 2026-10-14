@@ -10,7 +10,7 @@ import ProjectsPage from './components/ProjectsPage';
 import BudgetVsActualPage from './components/BudgetVsActualPage';
 import StagesPage from './components/StagesPage';
 import ContractsPage from './components/ContractsPage';
-import {projectsData} from './data/renovationData.js';
+import projectsData from './data/renovationData.js';
 import { Wallet, CircleDollarSign, TrendingDown, Users, Bell, User } from 'lucide-react';
 
 export default function App() {
